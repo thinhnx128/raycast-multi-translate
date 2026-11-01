@@ -1,7 +1,9 @@
 import googleTranslate from '@iamtraction/google-translate'
 import { LRUCache } from 'lru-cache'
+import { getPreferenceValues } from '@raycast/api'
 import type { LanguageCode } from '../data/languages'
 import type { TranslateResult } from '../types'
+import { translateWithDeepL } from '../providers/deepl'
 
 export const AUTO_DETECT = 'auto'
 
@@ -22,6 +24,18 @@ export class TranslateError extends Error {
   }
 }
 
+function getConfiguredDeepLKey(): string | undefined {
+  try {
+    const prefs = getPreferenceValues<{ deeplApiKey?: string }>()
+    if (prefs?.deeplApiKey?.trim())
+      return prefs.deeplApiKey.trim()
+  }
+  catch {
+    // Fallback when running outside Raycast runtime (e.g. unit tests)
+  }
+  return process.env.DEEPL_API_KEY?.trim() || undefined
+}
+
 export async function translate(text: string, from: LanguageCode, to: LanguageCode): Promise<TranslateResult> {
   if (!text) {
     return {
@@ -32,12 +46,32 @@ export async function translate(text: string, from: LanguageCode, to: LanguageCo
     }
   }
 
-  const key = `${from}:${to}:${text}`
+  const deeplKey = getConfiguredDeepLKey()
+  const providerPrefix = deeplKey ? 'deepl' : 'google'
+  const key = `${providerPrefix}:${from}:${to}:${text}`
   const cached = cache.get(key)
   if (cached)
     return cached
 
   try {
+    if (deeplKey) {
+      const deeplRes = await translateWithDeepL({
+        text,
+        sourceLang: from,
+        targetLang: to,
+        apiKey: deeplKey,
+      })
+      const detectedIso = (deeplRes.detectedSourceLang || from).toLowerCase() as LanguageCode
+      const result: TranslateResult = {
+        original: text,
+        translated: deeplRes.text,
+        from: from === AUTO_DETECT ? detectedIso : from,
+        to,
+      }
+      cache.set(key, result)
+      return result
+    }
+
     const translated = await googleTranslate(text, {
       from,
       to,
